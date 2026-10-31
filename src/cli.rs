@@ -197,6 +197,7 @@ fn handle_init(dir: &Path, id: &str, version: &str) -> Result<(), anyhow::Error>
         anyhow::bail!("dataset already exists at {}", dir.display());
     }
 
+    fs::create_dir_all(dir)?;
     fs::create_dir_all(dir.join("cases/sanity"))?;
     fs::create_dir_all(dir.join("cases/feature"))?;
     fs::create_dir_all(dir.join("cases/style"))?;

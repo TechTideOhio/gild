@@ -2,23 +2,34 @@
 # Synthetic disposable-runner experiment; not a production snapshot service.
 set -euo pipefail
 
-scratch="$(mktemp -d "${RUNNER_TEMP:-/tmp}/gild-btrfs-race.XXXXXXXX")"
+# RUNNER_TEMP can have non-traversable ancestors for the separate writer UID.
+# Use a unique directory under /tmp and verify writer traversal explicitly.
+scratch="$(mktemp -d /tmp/gild-btrfs-race.XXXXXXXX)"
 image="$scratch/test.img"
 mount_path="$scratch/mount"
 writer_pid=''
 pass_message=''
 cleanup() {
-  local status=$? cleanup_failed=0 safe_to_remove=1 probe_status attachments
+  local status=$? cleanup_failed=0 safe_to_remove=1 probe_status attachments writer_status
   trap - EXIT
   set +e
   if [[ -n "$writer_pid" ]]; then
-    sudo -u nobody touch "$mount_path/source/stop" 2>/dev/null || cleanup_failed=1
+    if ! sudo -u nobody touch "$mount_path/source/data/stop" 2>/dev/null; then
+      echo 'ERROR: could not signal writer to stop' >&2
+      if [[ "$status" -eq 0 ]]; then status=1; fi
+    fi
     # The writer is itself wrapped in timeout; wait is bounded even on failure.
-    wait "$writer_pid" || cleanup_failed=1
+    wait "$writer_pid"
+    writer_status=$?
+    if [[ "$writer_status" -ne 0 ]]; then
+      echo "ERROR: writer exited with status $writer_status" >&2
+      if [[ "$status" -eq 0 ]]; then status=1; fi
+    fi
   fi
   mountpoint -q "$mount_path"
   probe_status=$?
   if [[ "$probe_status" -eq 0 ]]; then
+    if [[ -d "$mount_path/snapshot-control" ]]; then sudo btrfs subvolume delete "$mount_path/snapshot-control" >/dev/null 2>&1 || cleanup_failed=1; fi
     if [[ -d "$mount_path/snapshot" ]]; then sudo btrfs subvolume delete "$mount_path/snapshot" >/dev/null 2>&1 || cleanup_failed=1; fi
     if [[ -d "$mount_path/source" ]]; then sudo btrfs subvolume delete "$mount_path/source" >/dev/null 2>&1 || cleanup_failed=1; fi
     sudo umount "$mount_path" || cleanup_failed=1
@@ -84,7 +95,14 @@ sudo mkfs.btrfs -q -f "$image"
 sudo mount -t btrfs -o loop "$image" "$mount_path"
 sudo chmod 755 "$mount_path"
 sudo btrfs subvolume create "$mount_path/source"
-sudo chown nobody:nogroup "$mount_path/source"
+# Btrfs preserves subvolume-root ownership in snapshots. Keep it trusted;
+# delegate only a child directory, not control over the subvolume itself.
+sudo mkdir "$mount_path/source/data"
+sudo chown nobody:nogroup "$mount_path/source/data"
+if [[ "$(stat -c '%u' "$mount_path/source")" -ne 0 ]]; then
+  echo 'ERROR: source subvolume root is not owned by root' >&2
+  exit 1
+fi
 
 if sudo -u nobody test -r "$image"; then
   echo 'ERROR: writer can read backing image' >&2
@@ -95,7 +113,11 @@ if sudo -u nobody touch "$mount_path/unauthorized" 2>/dev/null; then
   exit 1
 fi
 
-source_dir="$mount_path/source"
+source_dir="$mount_path/source/data"
+if ! sudo -u nobody test -x "$source_dir"; then
+  echo 'ERROR: writer cannot traverse synthetic source directory' >&2
+  exit 1
+fi
 sudo -u nobody timeout --signal=TERM --kill-after=2s 60s bash -c '
   set -euo pipefail
   d="$1"
@@ -120,8 +142,12 @@ done
 [[ -s "$source_dir/count" && -e "$source_dir/ready" ]] || { echo 'ERROR: writer readiness timeout' >&2; exit 1; }
 count_before="$(cat "$source_dir/count")"
 [[ "$count_before" =~ ^[0-9]+$ ]] || { echo 'ERROR: invalid writer count' >&2; exit 1; }
-sudo btrfs subvolume snapshot -r "$source_dir" "$mount_path/snapshot"
-snapshot_hash="$(sha256sum "$mount_path/snapshot/value" | cut -d' ' -f1)"
+sudo btrfs subvolume snapshot -r "$mount_path/source" "$mount_path/snapshot"
+if [[ "$(stat -c '%u' "$mount_path/snapshot")" -ne 0 ]]; then
+  echo 'ERROR: snapshot subvolume root is not owned by root' >&2
+  exit 1
+fi
+snapshot_hash="$(sha256sum "$mount_path/snapshot/data/value" | cut -d' ' -f1)"
 count_at_capture="$(cat "$source_dir/count")"
 [[ "$count_at_capture" =~ ^[0-9]+$ ]] || { echo 'ERROR: invalid post-capture writer count' >&2; exit 1; }
 for _ in {1..200}; do
@@ -130,21 +156,34 @@ for _ in {1..200}; do
   sleep 0.05
 done
 [[ "${count_after:-}" =~ ^[0-9]+$ ]] && (( count_after > count_at_capture )) || { echo 'ERROR: writer did not progress after snapshot' >&2; exit 1; }
-test "$(sha256sum "$mount_path/snapshot/value" | cut -d' ' -f1)" = "$snapshot_hash"
-test "$(stat -c '%U' "$mount_path/snapshot/value")" = nobody
-if sudo -u nobody bash -c 'printf "tamper\n" >> "$1"' _ "$mount_path/snapshot/value" 2>/dev/null; then
+test "$(sha256sum "$mount_path/snapshot/data/value" | cut -d' ' -f1)" = "$snapshot_hash"
+test "$(stat -c '%U' "$mount_path/snapshot/data/value")" = nobody
+mode="$(stat -c '%a' "$mount_path/snapshot/data/value")"
+[[ "$mode" =~ ^[0-7]+$ ]] && (( (8#$mode & 0200) != 0 )) || { echo 'ERROR: snapshot file is not owner-writable by mode' >&2; exit 1; }
+sudo -u nobody test -w "$source_dir/value" || { echo 'ERROR: writer cannot write live positive-control file' >&2; exit 1; }
+if sudo -u nobody bash -c 'printf "tamper\n" >> "$1"' _ "$mount_path/snapshot/data/value" 2>/dev/null; then
   echo 'ERROR: writer changed snapshot file' >&2
   exit 1
 fi
+test "$(sha256sum "$mount_path/snapshot/data/value" | cut -d' ' -f1)" = "$snapshot_hash"
+test "$(sudo btrfs property get -ts "$mount_path/snapshot" ro)" = 'ro=true'
+# A separate snapshot proves the privileged property command can change and
+# restore the property without disturbing the snapshot under test.
+sudo btrfs subvolume snapshot -r "$mount_path/source" "$mount_path/snapshot-control"
+sudo btrfs property set -ts "$mount_path/snapshot-control" ro false
+test "$(sudo btrfs property get -ts "$mount_path/snapshot-control" ro)" = 'ro=false'
+sudo btrfs property set -ts "$mount_path/snapshot-control" ro true
+test "$(sudo btrfs property get -ts "$mount_path/snapshot-control" ro)" = 'ro=true'
 if sudo -u nobody btrfs property set -ts "$mount_path/snapshot" ro false 2>/dev/null; then
   echo 'ERROR: writer altered snapshot read-only property' >&2
   exit 1
 fi
+test "$(sudo btrfs property get -ts "$mount_path/snapshot" ro)" = 'ro=true'
 sudo -u nobody touch "$source_dir/stop"
 wait "$writer_pid"
 writer_pid=''
 sudo btrfs subvolume delete "$mount_path/snapshot"
-if [[ -e "$mount_path/snapshot/value" ]]; then
+if [[ -e "$mount_path/snapshot/data/value" ]]; then
   echo 'ERROR: deleted snapshot remains readable by pathname' >&2
   exit 1
 fi
