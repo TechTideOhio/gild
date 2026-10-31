@@ -1,0 +1,4 @@
+/target
+*.lock.bin
+.DS_Store
+Thumbs.db

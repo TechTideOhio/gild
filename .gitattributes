@@ -1,0 +1,13 @@
+# Gitattributes for TechTideOhio/gild
+# Treat all scripts, fixtures, docs, and non-core files as vendored/documentation so GitHub detects 100.0% Rust
+
+*.ps1 linguist-vendored
+*.sh linguist-vendored
+*.json linguist-vendored
+*.toml linguist-vendored
+*.yml linguist-vendored
+*.yaml linguist-vendored
+*.md linguist-documentation
+security-tests/** linguist-vendored
+tests/** linguist-vendored
+.github/** linguist-vendored
