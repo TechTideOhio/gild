@@ -184,13 +184,18 @@ All commands accept `--json` to produce machine-readable envelopes for automated
 
 ---
 
-## TideOS Eval Kit Trilogy
+## The Complete TideOS Eval Kit
 
-| Tool | Focus | Artifact | Status |
-|---|---|---|---|
-| **Tool 1: reval** | Execution, quality gates, trace error analysis, sentinel watcher | [TechTideOhio/reval](https://github.com/TechTideOhio/reval) | v0.2.0 |
-| **Tool 2: gild** | Golden dataset schema, stratification, and cryptographic locking | [TechTideOhio/gild](https://github.com/TechTideOhio/gild) | v0.1.0 |
-| **Tool 3: tessel** | Combinatorial covering arrays, synthetic input generation | [TechTideOhio/tessel](https://github.com/TechTideOhio/tessel) | v0.1.0 |
+| # | Tool | Crate | Release Binary | Core Responsibility |
+|---|---|---|---|---|
+| **1** | **`reval`** | `reval` | `2.07 MB` | **Trace Error Analysis, Gating & MCP Server** |
+| **2** | **`gild`** | `gild` | `2.46 MB` | **Golden Dataset Governance & Stratification** |
+| **3** | **`tessel`** | `tessel-eval` | `1.97 MB` | **Combinatorial Synthetic Scenario Generator** |
+| **4** | **`assay`** | `assay-eval` | `2.09 MB` | **Deterministic Assertions First & In-Memory RLS** |
+| **5** | **`tide-rill`** | `tide-rill` | `1.54 MB` | **Offline Retrieval Quality & Answer Faithfulness** |
+| **6** | **`keel`** | `keel-eval` | `1.91 MB` | **Agent Trajectory Alignment & Step Efficiency (14 vs 3 calls)** |
+| **7** | **`temper`** | `temper-eval` | `0.89 MB` | **Multi-Trial Reliability (pass@k vs pass^k at Real Temperature)** |
+| **8** | **`parley`** | `parley-eval` | `1.77 MB` | **Simulated Users for Multi-Turn State, Memory & Policy Evals** |
 
 ---
 
